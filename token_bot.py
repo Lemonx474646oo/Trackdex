@@ -36,6 +36,7 @@ def load_state():
     s.setdefault("users", [ADMIN]); s.setdefault("channels", []); s.setdefault("muted", [])
     s.setdefault("token", TOKEN_ADDR); s.setdefault("chain", CHAIN)
     s.setdefault("hold", HOLD); s.setdefault("withdraw", WITHDRAW)
+    s.setdefault("ch_every", 120); s.setdefault("ch_edit", False); s.setdefault("ch_msgs", {})
     return s
 
 state = load_state()
@@ -75,12 +76,33 @@ def send(chat, text, keyboard=True):
         state["users"].remove(chat); save_state()
     return d
 
-def broadcast(text):
+def broadcast(text, channels=True):
     for uid in list(state["users"]):
         if uid not in state["muted"]:
             send(uid, text); time.sleep(0.05)
-    for ch in state["channels"]:
-        send(ch, text, keyboard=False); time.sleep(0.05)
+    if channels:
+        for ch in state["channels"]:
+            send(ch, text, keyboard=False); time.sleep(0.05)
+
+def post_channels():
+    """سعر دقيق لكل القنوات (رسالة جديدة أو تعديل نفس الرسالة)"""
+    if not state["channels"]:
+        return
+    text = price_text()
+    if last:
+        text += f"\n\n{last['sig']} (قوة {last['score']:+.2f}) | شراء/بيع 5د: {last['buys5']}/{last['sells5']}"
+    for ch in list(state["channels"]):
+        key = str(ch)
+        mid = state["ch_msgs"].get(key)
+        if state["ch_edit"] and mid:
+            d = api("editMessageText", chat_id=ch, message_id=mid, text=text, parse_mode="HTML",
+                    disable_web_page_preview=True)
+            if d.get("ok") or "not modified" in str(d.get("description", "")):
+                continue
+        d = send(ch, text, keyboard=False)
+        if d.get("ok") and state["ch_edit"]:
+            state["ch_msgs"][key] = d["result"]["message_id"]
+        time.sleep(0.1)
 
 
 # ---------- البيانات ----------
@@ -208,7 +230,18 @@ def handle_token(cid, addr, chain=None):
 
 
 # ---------- الأوامر ----------
+def link_channel(ch, title=""):
+    if ch not in state["channels"]:
+        state["channels"].append(ch)
+        save_state()
+    send(ch, "✅ تم ربط القناة. هتوصلها الأسعار تلقائياً.", keyboard=False)
+    send(ADMIN, f"✅ اتربطت قناة: {html.escape(str(title))} <code>{ch}</code>")
+
 def handle(u):
+    cp = u.get("channel_post")
+    if cp and (cp.get("text") or "").strip().lower().startswith("/link"):
+        link_channel(cp["chat"]["id"], cp["chat"].get("title") or cp["chat"].get("username", ""))
+        return
     if "callback_query" in u:
         cq = u["callback_query"]
         cid, mid, data = cq["message"]["chat"]["id"], cq["message"]["message_id"], cq["data"]
@@ -286,9 +319,27 @@ def handle(u):
         broadcast(html.escape(arg))
     elif cid == ADMIN and cmd == "/addchannel" and arg:
         ch = arg.strip()
-        if ch not in state["channels"]:
-            state["channels"].append(ch); save_state()
-        send(cid, f"✅ اتضافت القناة {html.escape(ch)} (لازم البوت يكون أدمن فيها)")
+        if ch.lstrip("-").isdigit():
+            ch = int(ch)
+        d = send(ch, "✅ تم ربط القناة. هتوصلها الأسعار تلقائياً.", keyboard=False)
+        if d.get("ok"):
+            if ch not in state["channels"]:
+                state["channels"].append(ch); save_state()
+            send(cid, f"✅ اتضافت القناة {html.escape(str(ch))}")
+        else:
+            send(cid, "❌ ما قدرتش أبعت للقناة: " + html.escape(str(d.get("description"))) +
+                      "\nتأكد إن البوت أدمن وعنده صلاحية نشر الرسائل.")
+    elif cid == ADMIN and cmd == "/interval" and arg:
+        try:
+            n = int(arg.split()[0])
+            assert 60 <= n <= 3600
+            state["ch_every"] = n; save_state()
+            send(cid, f"✅ هيتبعت للقنوات كل {n} ثانية")
+        except Exception:
+            send(cid, "الصيغة: /interval 120 (بين 60 و 3600 ثانية)")
+    elif cid == ADMIN and cmd == "/chmode" and arg.strip().lower() in ("edit", "new"):
+        state["ch_edit"] = arg.strip().lower() == "edit"; state["ch_msgs"] = {}; save_state()
+        send(cid, "✏️ هيعدّل نفس الرسالة كل مرة" if state["ch_edit"] else "🆕 هيبعت رسالة جديدة كل مرة")
     elif cid == ADMIN and cmd == "/delchannel" and arg:
         if arg.strip() in state["channels"]:
             state["channels"].remove(arg.strip()); save_state()
@@ -314,20 +365,26 @@ def updates_loop():
 
 def main():
     threading.Thread(target=updates_loop, daemon=True).start()
-    last_report = 0
+    last_an = last_rep = last_ch = 0
     while time.time() - START < RUN_SECONDS:
-        t0 = time.time()
+        now = time.time()
         try:
-            a = analyze(get_pair(max_age=0))
-            last.clear(); last.update(a)
-            pending.append((time.time(), a["price"], a["sig"]))
-            evaluate()
-            if time.time() - last_report >= 900:
-                broadcast(full_report())
-                last_report = time.time()
+            if now - last_an >= 60:
+                last_an = now
+                a = analyze(get_pair(max_age=0))
+                last.clear(); last.update(a)
+                pending.append((now, a["price"], a["sig"]))
+                evaluate()
+            if now - last_rep >= 900 and last:
+                last_rep = now
+                broadcast(full_report(), channels=False)
+            if now - last_ch >= state["ch_every"] and last:
+                last_ch = now
+                get_pair(max_age=0)
+                post_channels()
         except Exception as e:
             print("loop error", e)
-        time.sleep(max(1, 60 - (time.time() - t0)))
+        time.sleep(5)
     save_state()
 
 
