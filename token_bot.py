@@ -4,7 +4,11 @@
 - تحليل كل دقيقة + تقرير كل 15 دقيقة للمشتركين والقنوات
 المتغيرات: TG_TOKEN (إجباري) / ADMIN_ID / TOKEN_ADDR / CHAIN
 """
-import os, time, math, json, threading, html, requests
+import os, sys, time, math, json, threading, html, requests
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+except Exception:
+    pass
 from collections import deque
 
 TG_TOKEN = os.environ["TG_TOKEN"]
@@ -278,6 +282,11 @@ def handle(u):
     cid, txt = m.get("chat", {}).get("id"), (m.get("text") or "").strip()
     if not cid:
         return
+    if m.get("chat", {}).get("type") in ("group", "supergroup"):
+        first = txt.split()[0].split("@")[0].lower() if txt else ""
+        if first == "/link" and (m.get("from") or {}).get("id") == ADMIN:
+            link_channel(cid, m["chat"].get("title", ""))
+        return
     if cid == ADMIN and txt and not txt.startswith("/") and " " not in txt and len(txt) >= 32:
         handle_token(cid, txt)
         return
@@ -352,6 +361,10 @@ def updates_loop():
     while True:
         try:
             r = requests.get(f"{TG}/getUpdates", params={"timeout": 25, "offset": offset}, timeout=35).json()
+            if not r.get("ok"):
+                print("getUpdates failed:", r)
+                time.sleep(5)
+                continue
             for u in r.get("result", []):
                 offset = u["update_id"] + 1
                 try:
@@ -364,6 +377,9 @@ def updates_loop():
 
 
 def main():
+    print("bot started", flush=True)
+    d = send(ADMIN, "🟢 البوت اشتغل (تشغيلة جديدة)", keyboard=False)
+    print("start msg:", d.get("ok"), d.get("description"), flush=True)
     threading.Thread(target=updates_loop, daemon=True).start()
     last_an = last_rep = last_ch = 0
     while time.time() - START < RUN_SECONDS:
