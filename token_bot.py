@@ -376,7 +376,26 @@ def updates_loop():
             time.sleep(3)
 
 
+def tg_check(tries=5):
+    """0 = تمام | 3 = تليجرام مش واصل (جرّب جهاز تاني) | 1 = التوكن غلط"""
+    for _ in range(tries):
+        try:
+            r = requests.get(f"{TG}/getMe", timeout=10).json()
+            if r.get("ok"):
+                return 0
+            if r.get("error_code") in (401, 404):
+                return 1
+        except Exception as e:
+            print("getMe error:", e, flush=True)
+        time.sleep(2)
+    return 3
+
+
 def main():
+    code = tg_check()
+    if code:
+        print("telegram not reachable / bad token, exit", code, flush=True)
+        sys.exit(code)
     print("bot started", flush=True)
     d = send(ADMIN, "🟢 البوت اشتغل (تشغيلة جديدة)", keyboard=False)
     print("start msg:", d.get("ok"), d.get("description"), flush=True)
