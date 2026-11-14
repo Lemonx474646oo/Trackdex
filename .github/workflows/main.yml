@@ -33,7 +33,7 @@ jobs:
           git add subs.json
           git diff --cached --quiet || (git commit -m "state" && git push)
       - name: Start next run
-        if: always()
+        if: success()
         run: gh workflow run bot
         env:
           GH_TOKEN: ${{ github.token }}
