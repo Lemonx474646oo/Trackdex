@@ -20,7 +20,11 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
       - name: Run bot
-        run: python token_bot.py
+        id: bot
+        run: |
+          set +e
+          python -u token_bot.py
+          echo "code=$?" >> "$GITHUB_OUTPUT"
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           ADMIN_ID: ${{ secrets.ADMIN_ID }}
@@ -33,7 +37,9 @@ jobs:
           git add subs.json
           git diff --cached --quiet || (git commit -m "state" && git push)
       - name: Start next run
-        if: success()
-        run: gh workflow run bot
+        if: steps.bot.outputs.code == '0' || steps.bot.outputs.code == '3'
+        run: |
+          sleep 5
+          gh workflow run bot
         env:
           GH_TOKEN: ${{ github.token }}
